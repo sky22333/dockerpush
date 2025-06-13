@@ -206,9 +206,9 @@ func (ms *MemoryStore) RecordAuthFailure(username string) {
 	failure.Count++
 	failure.LastTry = time.Now()
 	
-	// 如果失败次数超过5次，锁定15分钟
+	// 如果失败次数超过5次，锁定30分钟
 	if failure.Count >= 5 {
-		failure.LockedUntil = time.Now().Add(15 * time.Minute)
+		failure.LockedUntil = time.Now().Add(30 * time.Minute)
 	}
 	
 	ms.authFailures[username] = failure
