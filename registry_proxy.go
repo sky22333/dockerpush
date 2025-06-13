@@ -11,12 +11,45 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"encoding/json"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"go.uber.org/zap"
 )
+
+// Duration 自定义时间类型，支持JSON字符串和数字解析
+type Duration time.Duration
+
+// UnmarshalJSON 自定义JSON解析方法
+func (d *Duration) UnmarshalJSON(data []byte) error {
+	var v interface{}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	
+	switch value := v.(type) {
+	case string:
+		// 解析时间字符串，如 "24h", "300s", "5m"
+		duration, err := time.ParseDuration(value)
+		if err != nil {
+			return err
+		}
+		*d = Duration(duration)
+	case float64:
+		// 解析数字（秒数），如 86400, 300
+		*d = Duration(time.Duration(value) * time.Second)
+	default:
+		return fmt.Errorf("invalid duration type: %T", value)
+	}
+	return nil
+}
+
+// ToDuration 转换为标准time.Duration
+func (d Duration) ToDuration() time.Duration {
+	return time.Duration(d)
+}
 
 // RegistryProxy 主代理服务
 type RegistryProxy struct {
@@ -31,19 +64,19 @@ type RegistryProxy struct {
 
 // Config 服务配置
 type Config struct {
-	Port               int           `json:"port"`
-	TLSCert            string        `json:"tls_cert"`
-	TLSKey             string        `json:"tls_key"`
-	TokenExpiry        time.Duration `json:"token_expiry"`
-	MaxConcurrent      int           `json:"max_concurrent"`
-	BufferSize         int           `json:"buffer_size"`
-	EnableMetrics      bool          `json:"enable_metrics"`
-	LogLevel           string        `json:"log_level"`
-	DataPersistence    bool          `json:"data_persistence"`
-	DataFile           string        `json:"data_file"`
-	StreamTimeout      time.Duration `json:"stream_timeout"`
-	ConnectionPoolSize int           `json:"connection_pool_size"`
-	EnableCompression  bool          `json:"enable_compression"`
+	Port               int      `json:"port"`
+	TLSCert            string   `json:"tls_cert"`
+	TLSKey             string   `json:"tls_key"`
+	TokenExpiry        Duration `json:"token_expiry"`
+	MaxConcurrent      int      `json:"max_concurrent"`
+	BufferSize         int      `json:"buffer_size"`
+	EnableMetrics      bool     `json:"enable_metrics"`
+	LogLevel           string   `json:"log_level"`
+	DataPersistence    bool     `json:"data_persistence"`
+	DataFile           string   `json:"data_file"`
+	StreamTimeout      Duration `json:"stream_timeout"`
+	ConnectionPoolSize int      `json:"connection_pool_size"`
+	EnableCompression  bool     `json:"enable_compression"`
 }
 
 // UpstreamConfig 上游注册表配置
@@ -250,7 +283,7 @@ func NewRegistryProxy(config *Config) (*RegistryProxy, error) {
 	// 初始化认证服务
 	authService := &MemoryAuthService{
 		store:         store,
-		tokenExpiry:   config.TokenExpiry,
+		tokenExpiry:   config.TokenExpiry.ToDuration(),
 		logger:        logger,
 		secret:        secret,
 		jwtSigningKey: jwtKey,
@@ -453,7 +486,7 @@ func (rp *RegistryProxy) HandleAuth(c *gin.Context) {
 	response := TokenResponse{
 		Token:       token,
 		AccessToken: token,
-		ExpiresIn:   int(rp.config.TokenExpiry.Seconds()),
+		ExpiresIn:   int(rp.config.TokenExpiry.ToDuration().Seconds()),
 	}
 	
 	c.JSON(http.StatusOK, response)

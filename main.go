@@ -91,14 +91,14 @@ func LoadConfig(configFile string) (*Config, error) {
 	// 默认配置
 	config := &Config{
 		Port:               5000,
-		TokenExpiry:        24 * time.Hour,
+		TokenExpiry:        Duration(24 * time.Hour),
 		MaxConcurrent:      50,
 		BufferSize:         1024 * 1024, // 1MB
 		EnableMetrics:      true,
 		LogLevel:           "info",
 		DataPersistence:    false,
 		DataFile:           "/tmp/registry-proxy-data.json",
-		StreamTimeout:      300 * time.Second, // 5分钟
+		StreamTimeout:      Duration(300 * time.Second), // 5分钟
 		ConnectionPoolSize: 100,
 		EnableCompression:  false, // 禁用压缩以提高流式性能
 	}
@@ -320,13 +320,14 @@ func generateExampleConfig() *Config {
 		Port:            5000,
 		TLSCert:         "", // 留空表示使用HTTP
 		TLSKey:          "",
-		TokenExpiry:     24 * time.Hour,
+		TokenExpiry:     Duration(24 * time.Hour),
 		MaxConcurrent:   10,
 		BufferSize:      64 * 1024,
 		EnableMetrics:   true,
 		LogLevel:        "info",
 		DataPersistence: false,
 		DataFile:        "/tmp/registry-proxy-data.json",
+		StreamTimeout:   Duration(300 * time.Second),
 	}
 }
 
