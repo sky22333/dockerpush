@@ -3,10 +3,13 @@
   "tls_cert": "",
   "tls_key": "",
   "token_expiry": "24h",
-  "max_concurrent": 20,
-  "buffer_size": 65536,
+  "max_concurrent": 50,
+  "buffer_size": 1048576,
   "enable_metrics": true,
   "log_level": "info",
   "data_persistence": false,
-  "data_file": "/tmp/registry-proxy-data.json"
+  "data_file": "/tmp/registry-proxy-data.json",
+  "stream_timeout": "300s",
+  "connection_pool_size": 100,
+  "enable_compression": false
 } 

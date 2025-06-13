@@ -90,14 +90,17 @@ func main() {
 func LoadConfig(configFile string) (*Config, error) {
 	// 默认配置
 	config := &Config{
-		Port:            5000,
-		TokenExpiry:     24 * time.Hour,
-		MaxConcurrent:   10,
-		BufferSize:      64 * 1024, // 64KB
-		EnableMetrics:   true,
-		LogLevel:        "info",
-		DataPersistence: false,
-		DataFile:        "/tmp/registry-proxy-data.json",
+		Port:               5000,
+		TokenExpiry:        24 * time.Hour,
+		MaxConcurrent:      50,
+		BufferSize:         1024 * 1024, // 1MB
+		EnableMetrics:      true,
+		LogLevel:           "info",
+		DataPersistence:    false,
+		DataFile:           "/tmp/registry-proxy-data.json",
+		StreamTimeout:      300 * time.Second, // 5分钟
+		ConnectionPoolSize: 100,
+		EnableCompression:  false, // 禁用压缩以提高流式性能
 	}
 
 	// 读取配置文件
@@ -215,63 +218,69 @@ func setupAdminUser(proxy *RegistryProxy, config *Config) error {
 
 // startBackgroundServices 启动后台服务
 func startBackgroundServices(proxy *RegistryProxy, logger *zap.Logger) {
-	// 启动健康检查
-	healthChecker := &HealthChecker{
-		proxyService: proxy.proxyService,
-		upstreams:    proxy.upstreams,
-		logger:       logger,
-	}
-
 	// 启动数据持久化（如果启用）
 	if proxy.config.DataPersistence {
 		go startDataPersistence(proxy, logger)
 	}
-
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			healthStatus := healthChecker.CheckUpstreamHealth()
-			for upstream, healthy := range healthStatus {
-				if healthy {
-					logger.Debug("Upstream healthy", zap.String("upstream", upstream))
-				} else {
-					logger.Warn("Upstream unhealthy", zap.String("upstream", upstream))
-				}
+	
+	// 启动会话清理任务，防止内存泄漏
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute) // 每10分钟清理一次
+		defer ticker.Stop()
+		
+		for {
+			select {
+			case <-ticker.C:
+				proxy.proxyService.CleanupExpiredSessions()
+				logger.Debug("Cleaned up expired upload sessions")
 			}
 		}
-	}
+	}()
+	
+	// 启动认证token清理任务
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour) // 每小时清理一次过期token
+		defer ticker.Stop()
+		
+		for {
+			select {
+			case <-ticker.C:
+				proxy.authService.CleanupExpiredTokens()
+				logger.Debug("Cleaned up expired auth tokens")
+			}
+		}
+	}()
 }
 
 // gracefulShutdown 优雅停机
 func gracefulShutdown(proxy *RegistryProxy, logger *zap.Logger) {
 	logger.Info("Starting graceful shutdown...")
-
+	
+	// 创建超时上下文
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
+	
 	// 停止HTTP服务器
 	if proxy.server != nil {
 		if err := proxy.server.Shutdown(ctx); err != nil {
 			logger.Error("Failed to shutdown server gracefully", zap.Error(err))
+		} else {
+			logger.Info("HTTP server stopped")
 		}
 	}
-
-	// 等待正在进行的上传完成
-	waitForActiveUploads(proxy, logger, ctx)
-
-	// 停止内存存储的清理器
+	
+	// 等待活跃上传完成
+	go waitForActiveUploads(proxy, logger, ctx)
+	
+	// 清理所有会话资源
+	proxy.proxyService.CleanupExpiredSessions()
+	
+	// 停止内存存储
 	if proxy.store != nil {
 		proxy.store.Stop()
+		logger.Info("Memory store stopped")
 	}
-
-	// 保存数据（如果启用持久化）
-	if proxy.config.DataPersistence {
-		saveData(proxy, logger)
-	}
-
+	
 	logger.Info("Graceful shutdown completed")
 }
 
@@ -279,24 +288,28 @@ func gracefulShutdown(proxy *RegistryProxy, logger *zap.Logger) {
 func waitForActiveUploads(proxy *RegistryProxy, logger *zap.Logger, ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
-
+	
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Warn("Shutdown timeout reached, forcing exit")
+			logger.Warn("Timeout waiting for uploads to complete")
 			return
 		case <-ticker.C:
-			proxy.proxyService.sessionMutex.RLock()
-			activeCount := len(proxy.proxyService.uploadSessions)
-			proxy.proxyService.sessionMutex.RUnlock()
-
+			// 统计活跃会话数
+			activeCount := 0
+			for _, shard := range proxy.proxyService.uploadSessions {
+				shard.mutex.RLock()
+				activeCount += len(shard.sessions)
+				shard.mutex.RUnlock()
+			}
+			
 			if activeCount == 0 {
-				logger.Info("All uploads completed")
+				logger.Info("All upload sessions completed")
 				return
 			}
-
-			logger.Info("Waiting for uploads to complete",
-				zap.Int("active_uploads", activeCount))
+			
+			logger.Info("Waiting for upload sessions to complete", 
+				zap.Int("active_sessions", activeCount))
 		}
 	}
 }
@@ -348,9 +361,13 @@ func (rp *RegistryProxy) HandleHealthDetailed() map[string]interface{} {
 	health["upstreams"] = upstreamHealth
 	
 	// 活跃会话数
-	rp.proxyService.sessionMutex.RLock()
-	health["active_uploads"] = len(rp.proxyService.uploadSessions)
-	rp.proxyService.sessionMutex.RUnlock()
+	activeCount := 0
+	for _, shard := range rp.proxyService.uploadSessions {
+		shard.mutex.RLock()
+		activeCount += len(shard.sessions)
+		shard.mutex.RUnlock()
+	}
+	health["active_uploads"] = activeCount
 	
 	return health
 }
