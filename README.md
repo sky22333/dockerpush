@@ -82,3 +82,30 @@ docker run your-proxy-server:5000/alpine:latest echo "Hello from proxy!"
 3. **推送镜像**: `docker push localhost:5000/your-image:tag`
 4. **享受高性能代理**: 自动缓存认证，流式传输到DockerHub！
 
+### 配置（可选）
+```
+{
+  // 网络和服务配置
+  "port": 5000,                                    // HTTP服务监听端口
+  "tls_cert": "",                                  // TLS证书文件路径，空字符串表示使用HTTP模式
+  "tls_key": "",                                   // TLS私钥文件路径
+  
+  // 认证和安全配置
+  "token_expiry": "24h",                           // JWT Token过期时间（支持时间格式：24h, 30m, 3600s等）
+  
+  // 性能优化配置
+  "max_concurrent": 50,                            // 最大并发请求数，控制系统负载
+  "buffer_size": 1048576,                          // 流式传输缓冲区大小（字节），1MB = 1048576
+  "connection_pool_size": 100,                     // HTTP连接池大小，影响上游连接复用
+  "stream_timeout": "300s",                        // 流式传输超时时间，5分钟
+  "enable_compression": false,                     // 是否启用压缩，禁用可提升流式传输性能
+  
+  // 监控和日志配置
+  "enable_metrics": true,                          // 是否启用Prometheus监控指标端点
+  "log_level": "info",                            // 日志级别：debug, info, warn, error
+  
+  // 数据持久化配置
+  "data_persistence": false,                       // 是否启用数据持久化到文件
+  "data_file": "/tmp/registry-proxy-data.json"     // 持久化数据文件存储路径
+}
+```
