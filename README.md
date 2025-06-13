@@ -29,13 +29,15 @@ sudo systemctl restart docker
 sudo systemctl status docker  # 验证服务状态
 ```
 
-#### 2. 用户认证配置
+#### 2. 用户认证配置（透传模式）
+
+本代理工作在透传认证模式，直接使用您的DockerHub凭据。
 
 ##### 方法一：交互式登录
 ```bash
 docker login your-proxy-server:5000
-# 输入用户名: admin
-# 输入密码: admin123
+# 输入用户名: your-dockerhub-username
+# 输入密码: your-dockerhub-token-or-password
 ```
 
 ##### 方法二：配置文件
@@ -48,8 +50,8 @@ cat > ~/.docker/config.json << 'EOF'
 {
   "auths": {
     "your-proxy-server:5000": {
-      "username": "admin",
-      "password": "admin123"
+      "username": "your-dockerhub-username",
+      "password": "your-dockerhub-token-or-password"
     }
   }
 }
@@ -58,6 +60,8 @@ EOF
 # 设置文件权限
 chmod 600 ~/.docker/config.json
 ```
+
+**注意**: 代理会直接使用您提供的凭据向DockerHub进行认证，无需本地用户管理。
 
 
 #### 5. 使用示例
@@ -97,11 +101,9 @@ docker run your-proxy-server:5000/alpine:latest echo "Hello from proxy!"
   "max_concurrent": 50,                            // 最大并发请求数，控制系统负载
   "buffer_size": 1048576,                          // 流式传输缓冲区大小（字节），1MB = 1048576
   "connection_pool_size": 100,                     // HTTP连接池大小，影响上游连接复用
-  "stream_timeout": "300s",                        // 流式传输超时时间，5分钟
-  "enable_compression": false,                     // 是否启用压缩，禁用可提升流式传输性能
+  "request_timeout": "30s",                        // 上游请求超时时间，防止请求挂起
   
   // 监控和日志配置
-  "enable_metrics": true,                          // 是否启用Prometheus监控指标端点
   "log_level": "info",                            // 日志级别：debug, info, warn, error
   
   // 数据持久化配置

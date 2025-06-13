@@ -57,11 +57,6 @@ func main() {
 		logger.Fatal("Failed to setup upstreams", zap.Error(err))
 	}
 
-	// 创建管理用户（如果不存在）
-	if err := setupAdminUser(proxy, config); err != nil {
-		logger.Warn("Failed to setup admin user", zap.Error(err))
-	}
-
 	// 启动后台服务
 	go startBackgroundServices(proxy, logger)
 
@@ -94,13 +89,11 @@ func LoadConfig(configFile string) (*Config, error) {
 		TokenExpiry:        Duration(24 * time.Hour),
 		MaxConcurrent:      50,
 		BufferSize:         1024 * 1024, // 1MB
-		EnableMetrics:      true,
 		LogLevel:           "info",
 		DataPersistence:    false,
 		DataFile:           "/tmp/registry-proxy-data.json",
-		StreamTimeout:      Duration(300 * time.Second), // 5分钟
 		ConnectionPoolSize: 100,
-		EnableCompression:  false, // 禁用压缩以提高流式性能
+		RequestTimeout:     Duration(30 * time.Second),
 	}
 
 	// 读取配置文件
@@ -156,64 +149,45 @@ func initLogger(level string) (*zap.Logger, error) {
 	return config.Build()
 }
 
-// setupUpstreams 设置上游注册表
+// setupUpstreams 设置上游注册表 - 支持智能路由
 func setupUpstreams(proxy *RegistryProxy, config *Config) error {
-	// 这里可以从配置文件或环境变量读取上游配置
 	// 示例：添加DockerHub作为默认上游
 	dockerhubConfig := &UpstreamConfig{
-		Name:     "dockerhub",
-		Registry: "index.docker.io",
-		Username: os.Getenv("DOCKERHUB_USERNAME"),
-		Password: os.Getenv("DOCKERHUB_PASSWORD"),
+		Name:         "dockerhub",
+		Registry:     "index.docker.io",
+		Username:     os.Getenv("DOCKERHUB_USERNAME"),
+		Password:     os.Getenv("DOCKERHUB_PASSWORD"),
+		RoutePattern: "library/*", // 路由模式：library开头的镜像使用DockerHub
 	}
 
 	if err := proxy.AddUpstream(dockerhubConfig); err != nil {
 		return fmt.Errorf("failed to add dockerhub upstream: %w", err)
 	}
 
-	// 添加其他上游（如果配置了的话）
+	// 添加GCR上游（如果配置了的话）
 	if gcrServiceAccount := os.Getenv("GCR_SERVICE_ACCOUNT"); gcrServiceAccount != "" {
 		gcrConfig := &UpstreamConfig{
-			Name:     "gcr",
-			Registry: "gcr.io",
+			Name:         "gcr",
+			Registry:     "gcr.io",
+			RoutePattern: "gcr.io/*", // 路由模式：gcr.io开头的镜像使用GCR
 			// GCR需要特殊的认证处理
 		}
 		proxy.AddUpstream(gcrConfig)
 	}
 
+	// 添加Harbor私有仓库（示例）
+	if harborHost := os.Getenv("HARBOR_HOST"); harborHost != "" {
+		harborConfig := &UpstreamConfig{
+			Name:         "harbor",
+			Registry:     harborHost,
+			Username:     os.Getenv("HARBOR_USERNAME"),
+			Password:     os.Getenv("HARBOR_PASSWORD"),
+			RoutePattern: "private/*", // 路由模式：private开头的镜像使用Harbor
+		}
+		proxy.AddUpstream(harborConfig)
+	}
+
 	return nil
-}
-
-// setupAdminUser 创建管理员用户
-func setupAdminUser(proxy *RegistryProxy, config *Config) error {
-	adminUsername := os.Getenv("ADMIN_USERNAME")
-	adminPassword := os.Getenv("ADMIN_PASSWORD")
-
-	if adminUsername == "" || adminPassword == "" {
-		adminUsername = "admin"
-		adminPassword = "admin123" // 生产环境应该使用强密码
-	}
-
-	userStore := proxy.store
-	
-	// 检查管理员用户是否已存在
-	if _, err := userStore.GetUserByUsername(adminUsername); err == nil {
-		return nil // 用户已存在
-	}
-
-	// 创建管理员用户
-	adminUser := &User{
-		Username:    adminUsername,
-		Email:       "admin@registry-proxy.local",
-		PasswordHash: adminPassword, // 将在CreateUser中被哈希
-		Roles:       []string{"admin"},
-		Permissions: map[string][]string{
-			"*": {"*"}, // 全部权限
-		},
-		Enabled: true,
-	}
-
-	return userStore.CreateUser(adminUser)
 }
 
 // startBackgroundServices 启动后台服务
@@ -312,80 +286,6 @@ func waitForActiveUploads(proxy *RegistryProxy, logger *zap.Logger, ctx context.
 				zap.Int("active_sessions", activeCount))
 		}
 	}
-}
-
-// 示例配置文件生成
-func generateExampleConfig() *Config {
-	return &Config{
-		Port:            5000,
-		TLSCert:         "", // 留空表示使用HTTP
-		TLSKey:          "",
-		TokenExpiry:     Duration(24 * time.Hour),
-		MaxConcurrent:   10,
-		BufferSize:      64 * 1024,
-		EnableMetrics:   true,
-		LogLevel:        "info",
-		DataPersistence: false,
-		DataFile:        "/tmp/registry-proxy-data.json",
-		StreamTimeout:   Duration(300 * time.Second),
-	}
-}
-
-// 健康检查端点扩展
-func (rp *RegistryProxy) HandleHealthDetailed() map[string]interface{} {
-	health := make(map[string]interface{})
-	
-	// 基础健康状态
-	health["status"] = "healthy"
-	health["timestamp"] = time.Now().UTC()
-	health["version"] = "1.0.0"
-	
-	// 内存存储状态
-	if rp.store != nil {
-		health["storage"] = "healthy"
-		health["storage_stats"] = rp.store.GetStats()
-	} else {
-		health["storage"] = "unhealthy"
-		health["status"] = "degraded"
-	}
-	
-	// 上游状态
-	upstreamHealth := make(map[string]string)
-	for name, upstream := range rp.upstreams {
-		// 简单的连通性检查
-		if upstream.Registry != "" {
-			upstreamHealth[name] = "healthy" // 简化实现
-		} else {
-			upstreamHealth[name] = "unknown"
-		}
-	}
-	health["upstreams"] = upstreamHealth
-	
-	// 活跃会话数
-	activeCount := 0
-	for _, shard := range rp.proxyService.uploadSessions {
-		shard.mutex.RLock()
-		activeCount += len(shard.sessions)
-		shard.mutex.RUnlock()
-	}
-	health["active_uploads"] = activeCount
-	
-	return health
-}
-
-// 示例客户端配置生成
-func generateClientDockerConfig(proxyHost string, username, password string) map[string]interface{} {
-	config := map[string]interface{}{
-		"auths": map[string]interface{}{
-			proxyHost: map[string]interface{}{
-				"username": username,
-				"password": password,
-			},
-		},
-		"experimental": "enabled",
-	}
-	
-	return config
 }
 
 // startDataPersistence 启动数据持久化
