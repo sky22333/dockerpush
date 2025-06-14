@@ -347,29 +347,16 @@ func (rp *RegistryProxy) StartServer() error {
 	router.Use(rp.CORSMiddleware())
 	router.Use(rp.ErrorMiddleware())
 	
-	// Docker Registry API V2 路由
+	// Docker Registry API V2 路由 - 使用单一通配符路由处理所有请求
 	v2 := router.Group("/v2")
 	{
-		v2.GET("/", rp.HandlePing)
-		
-		// 认证中间件
-		authGroup := v2.Group("/")
-		authGroup.Use(rp.AuthMiddleware())
-		{
-			// 认证端点 - 在中间件中跳过认证检查
-			authGroup.GET("/auth", rp.HandleAuth)
-			
-			// Catalog API - 必须在通配符路由之前
-			authGroup.GET("/_catalog", rp.HandleCatalog)
-			
-			// 使用统一的通配符路由处理所有仓库相关请求
-			authGroup.GET("/*path", rp.HandleRegistryRequest)
-			authGroup.PUT("/*path", rp.HandleRegistryRequest)
-			authGroup.POST("/*path", rp.HandleRegistryRequest)
-			authGroup.DELETE("/*path", rp.HandleRegistryRequest)
-			authGroup.HEAD("/*path", rp.HandleRegistryRequest)
-			authGroup.PATCH("/*path", rp.HandleRegistryRequest)
-		}
+		// 使用单一通配符路由处理所有请求，在应用层进行认证和分发
+		v2.GET("/*path", rp.HandleUnifiedRequest)
+		v2.PUT("/*path", rp.HandleUnifiedRequest)
+		v2.POST("/*path", rp.HandleUnifiedRequest)
+		v2.DELETE("/*path", rp.HandleUnifiedRequest)
+		v2.HEAD("/*path", rp.HandleUnifiedRequest)
+		v2.PATCH("/*path", rp.HandleUnifiedRequest)
 	}
 
 	// 健康检查
@@ -393,10 +380,37 @@ func (rp *RegistryProxy) StartServer() error {
 	return rp.server.ListenAndServe()
 }
 
-// HandleRegistryRequest 统一处理所有Docker Registry请求
-func (rp *RegistryProxy) HandleRegistryRequest(c *gin.Context) {
+// HandleUnifiedRequest 统一处理所有Docker Registry请求，包含认证逻辑
+func (rp *RegistryProxy) HandleUnifiedRequest(c *gin.Context) {
 	path := strings.TrimPrefix(c.Param("path"), "/")
 	method := c.Request.Method
+	
+	// 特殊端点：ping端点（空路径）不需要认证
+	if path == "" && method == "GET" {
+		rp.HandlePing(c)
+		return
+	}
+	
+	// 特殊端点：认证端点不需要认证
+	if path == "auth" {
+		rp.HandleAuth(c)
+		return
+	}
+	
+	// 特殊端点：_catalog
+	if path == "_catalog" && method == "GET" {
+		// 需要认证
+		if !rp.checkAuthentication(c) {
+			return
+		}
+		rp.HandleCatalog(c)
+		return
+	}
+	
+	// 其他所有端点都需要认证
+	if !rp.checkAuthentication(c) {
+		return
+	}
 	
 	// 解析路径并分发到对应的Handler（按优先级排序，避免误匹配）
 	switch {
@@ -422,6 +436,32 @@ func (rp *RegistryProxy) HandleRegistryRequest(c *gin.Context) {
 	default:
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 	}
+}
+
+// checkAuthentication 检查认证，返回true表示认证通过
+func (rp *RegistryProxy) checkAuthentication(c *gin.Context) bool {
+	authHeader := c.GetHeader("Authorization")
+	if authHeader == "" {
+		c.Header("WWW-Authenticate", `Bearer realm="/v2/auth",service="registry"`)
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return false
+	}
+	
+	// 验证Bearer Token
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid auth format"})
+		return false
+	}
+	
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+	if !rp.authService.ValidateToken(token) {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+		return false
+	}
+	
+	// 将token存储到上下文中，供后续透传使用
+	c.Set("auth_token", token)
+	return true
 }
 
 // handleManifestRequest 处理Manifest相关请求
@@ -830,39 +870,7 @@ func (rp *RegistryProxy) HandleBlobUploadChunk(c *gin.Context) {
 }
 
 // 中间件实现
-func (rp *RegistryProxy) AuthMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// 跳过认证端点的认证检查
-		if c.Request.URL.Path == "/v2/auth" {
-			c.Next()
-			return
-		}
-		
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			c.Header("WWW-Authenticate", `Bearer realm="/v2/auth",service="registry"`)
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
-			return
-		}
-		
-		// 验证Bearer Token
-		if !strings.HasPrefix(authHeader, "Bearer ") {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid auth format"})
-			return
-		}
-		
-		token := strings.TrimPrefix(authHeader, "Bearer ")
-		if !rp.authService.ValidateToken(token) {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
-			return
-		}
-		
-		// 🔥 将token存储到上下文中，供后续透传使用
-		c.Set("auth_token", token)
-		
-		c.Next()
-	}
-}
+// AuthMiddleware 已移除，认证逻辑集成到HandleUnifiedRequest中
 
 // determineUpstream 智能上游路由选择
 func (rp *RegistryProxy) determineUpstream(repository string) *UpstreamConfig {
