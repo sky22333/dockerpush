@@ -442,9 +442,13 @@ func (rp *RegistryProxy) HandleUnifiedRequest(c *gin.Context) {
 func (rp *RegistryProxy) checkAuthentication(c *gin.Context) bool {
 	authHeader := c.GetHeader("Authorization")
 	if authHeader == "" {
-		// 构建完整的认证URL
+		// 构建完整的认证URL - 在反向代理环境下正确判断协议
 		scheme := "https"
-		if c.Request.TLS == nil {
+		// 检查多种可能的HTTPS指示器
+		if c.Request.TLS == nil && 
+		   c.GetHeader("X-Forwarded-Proto") != "https" && 
+		   c.GetHeader("X-Forwarded-Ssl") != "on" &&
+		   c.GetHeader("X-Scheme") != "https" {
 			scheme = "http"
 		}
 		host := c.Request.Host
@@ -1625,8 +1629,12 @@ func (rp *RegistryProxy) inferScopeFromPath(path, method string) string {
 		parts := strings.Split(path, "/blobs/uploads/")
 		if len(parts) == 2 && parts[0] != "" {
 			repository = parts[0]
-			// Docker Hub标准：对于blobs/uploads请求只返回pull权限
-			actions = []string{"pull"}
+			// 修正：上传操作需要push和pull权限
+			if method == "POST" {
+				actions = []string{"push", "pull"}
+			} else {
+				actions = []string{"pull"}
+			}
 		}
 	case strings.HasSuffix(path, "/tags/list"):
 		repository = strings.TrimSuffix(path, "/tags/list")
