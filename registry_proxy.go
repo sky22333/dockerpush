@@ -454,19 +454,21 @@ func (rp *RegistryProxy) checkAuthentication(c *gin.Context) bool {
 		host := c.Request.Host
 		authURL := fmt.Sprintf("%s://%s/v2/auth", scheme, host)
 		
-		// 从请求路径推断scope
-		path := strings.TrimPrefix(c.Param("path"), "/")
-		scope := rp.inferScopeFromPath(path, c.Request.Method)
-		
-		// 使用标准的service参数
-		service := "registry.docker.io"
-		
-		var wwwAuth string
-		if scope != "" {
-			wwwAuth = fmt.Sprintf(`Bearer realm="%s",service="%s",scope="%s"`, authURL, service, scope)
-		} else {
-			wwwAuth = fmt.Sprintf(`Bearer realm="%s",service="%s"`, authURL, service)
-		}
+			// 从请求路径推断scope
+	path := strings.TrimPrefix(c.Param("path"), "/")
+	scope := rp.inferScopeFromPath(path, c.Request.Method)
+	
+	// 使用标准的service参数
+	service := "registry.docker.io"
+	
+	// 根据Docker Hub的行为，某些请求不包含scope
+	// 特别是POST /blobs/uploads/ 请求
+	var wwwAuth string
+	if scope != "" && !rp.shouldOmitScope(path, c.Request.Method) {
+		wwwAuth = fmt.Sprintf(`Bearer realm="%s",service="%s",scope="%s"`, authURL, service, scope)
+	} else {
+		wwwAuth = fmt.Sprintf(`Bearer realm="%s",service="%s",scope=""`, authURL, service)
+	}
 		
 		c.Header("WWW-Authenticate", wwwAuth)
 		c.Header("Docker-Distribution-API-Version", "registry/2.0")
@@ -1590,11 +1592,23 @@ func (rp *RegistryProxy) extractUUIDFromLocation(location string) string {
 	return uuidRegex.FindString(location)
 }
 
+// shouldOmitScope 判断是否应该省略scope参数（模拟Docker Hub行为）
+func (rp *RegistryProxy) shouldOmitScope(path, method string) bool {
+	// 根据Docker Hub的行为，POST /blobs/uploads/ 请求返回空scope
+	if method == "POST" && strings.Contains(path, "/blobs/uploads/") {
+		return true
+	}
+	return false
+}
+
 // inferScopeFromPath 从请求路径推断scope参数
 func (rp *RegistryProxy) inferScopeFromPath(path, method string) string {
 	if path == "" || path == "_catalog" {
 		return ""
 	}
+	
+	// 调试日志
+	rp.logger.Debug("Inferring scope", zap.String("path", path), zap.String("method", method))
 	
 	// 解析仓库名
 	var repository string
@@ -1645,8 +1659,11 @@ func (rp *RegistryProxy) inferScopeFromPath(path, method string) string {
 	}
 	
 	if repository != "" && len(actions) > 0 {
-		return fmt.Sprintf("repository:%s:%s", repository, strings.Join(actions, ","))
+		scope := fmt.Sprintf("repository:%s:%s", repository, strings.Join(actions, ","))
+		rp.logger.Debug("Generated scope", zap.String("scope", scope))
+		return scope
 	}
 	
+	rp.logger.Debug("No scope generated", zap.String("repository", repository), zap.Strings("actions", actions))
 	return ""
 } 
