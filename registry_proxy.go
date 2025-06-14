@@ -351,12 +351,14 @@ func (rp *RegistryProxy) StartServer() error {
 	v2 := router.Group("/v2")
 	{
 		v2.GET("/", rp.HandlePing)
-		v2.GET("/auth", rp.HandleAuth)
 		
 		// 认证中间件
 		authGroup := v2.Group("/")
 		authGroup.Use(rp.AuthMiddleware())
 		{
+			// 认证端点 - 在中间件中跳过认证检查
+			authGroup.GET("/auth", rp.HandleAuth)
+			
 			// Catalog API - 必须在通配符路由之前
 			authGroup.GET("/_catalog", rp.HandleCatalog)
 			
@@ -395,12 +397,6 @@ func (rp *RegistryProxy) StartServer() error {
 func (rp *RegistryProxy) HandleRegistryRequest(c *gin.Context) {
 	path := strings.TrimPrefix(c.Param("path"), "/")
 	method := c.Request.Method
-	
-	// 排除认证路径，避免路由冲突
-	if path == "auth" {
-		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-		return
-	}
 	
 	// 解析路径并分发到对应的Handler（按优先级排序，避免误匹配）
 	switch {
@@ -836,6 +832,12 @@ func (rp *RegistryProxy) HandleBlobUploadChunk(c *gin.Context) {
 // 中间件实现
 func (rp *RegistryProxy) AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// 跳过认证端点的认证检查
+		if c.Request.URL.Path == "/v2/auth" {
+			c.Next()
+			return
+		}
+		
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
 			c.Header("WWW-Authenticate", `Bearer realm="/v2/auth",service="registry"`)
