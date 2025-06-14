@@ -149,16 +149,33 @@ func initLogger(level string) (*zap.Logger, error) {
 }
 
 func setupUpstreams(proxy *RegistryProxy, config *Config) error {
-	dockerhubConfig := &UpstreamConfig{
-		Name:         "dockerhub",
-		Registry:     "index.docker.io",
-		RoutePattern: "*",
+	// 1. 首先加载配置文件中的上游配置
+	if len(config.Upstreams) > 0 {
+		for _, upstreamJSON := range config.Upstreams {
+			upstreamConfig := &UpstreamConfig{
+				Name:         upstreamJSON.Name,
+				Registry:     upstreamJSON.Registry,
+				RoutePattern: upstreamJSON.RoutePattern,
+			}
+			
+			if err := proxy.AddUpstream(upstreamConfig); err != nil {
+				return fmt.Errorf("failed to add upstream %s: %w", upstreamJSON.Name, err)
+			}
+		}
+	} else {
+		// 2. 如果配置文件中没有上游配置，使用默认的DockerHub配置
+		dockerhubConfig := &UpstreamConfig{
+			Name:         "dockerhub",
+			Registry:     "index.docker.io",
+			RoutePattern: "*",
+		}
+
+		if err := proxy.AddUpstream(dockerhubConfig); err != nil {
+			return fmt.Errorf("failed to add dockerhub upstream: %w", err)
+		}
 	}
 
-	if err := proxy.AddUpstream(dockerhubConfig); err != nil {
-		return fmt.Errorf("failed to add dockerhub upstream: %w", err)
-	}
-
+	// 3. 环境变量配置仍然支持（用于动态添加额外的上游）
 	if gcrServiceAccount := os.Getenv("GCR_SERVICE_ACCOUNT"); gcrServiceAccount != "" {
 		gcrConfig := &UpstreamConfig{
 			Name:         "gcr",

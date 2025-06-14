@@ -9,5 +9,22 @@
   "data_persistence": false,
   "data_file": "/tmp/registry-proxy-data.json",
   "connection_pool_size": 100,
-  "request_timeout": "60s"
+  "request_timeout": "60s",
+  "upstreams": [
+    {
+      "name": "gcr",
+      "registry": "gcr.io",
+      "route_pattern": "gcr.io/*"
+          },
+    {
+      "name": "harbor",
+      "registry": "harbor.company.com",
+      "route_pattern": "private/*"
+    },
+    {
+      "name": "dockerhub",
+      "registry": "index.docker.io",
+      "route_pattern": "*"
+    }
+  ]
 } 

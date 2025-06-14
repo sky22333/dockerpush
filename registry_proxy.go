@@ -58,24 +58,33 @@ type RegistryProxy struct {
 	authService  *MemoryAuthService
 	proxyService *ProxyService
 	store        *MemoryStore
-	upstreams    map[string]*UpstreamConfig
+	upstreams    []*UpstreamConfig
+	upstreamMap  map[string]*UpstreamConfig
 	logger       *zap.Logger
 	config       *Config
 }
 
 // Config 服务配置
 type Config struct {
-	Port               int      `json:"port"`
-	TLSCert            string   `json:"tls_cert"`
-	TLSKey             string   `json:"tls_key"`
-	TokenExpiry        Duration `json:"token_expiry"`
-	MaxConcurrent      int      `json:"max_concurrent"`
-	BufferSize         int      `json:"buffer_size"`
-	LogLevel           string   `json:"log_level"`
-	DataPersistence    bool     `json:"data_persistence"`
-	DataFile           string   `json:"data_file"`
-	ConnectionPoolSize int      `json:"connection_pool_size"`
-	RequestTimeout     Duration `json:"request_timeout"`
+	Port               int                        `json:"port"`
+	TLSCert            string                     `json:"tls_cert"`
+	TLSKey             string                     `json:"tls_key"`
+	TokenExpiry        Duration                   `json:"token_expiry"`
+	MaxConcurrent      int                        `json:"max_concurrent"`
+	BufferSize         int                        `json:"buffer_size"`
+	LogLevel           string                     `json:"log_level"`
+	DataPersistence    bool                       `json:"data_persistence"`
+	DataFile           string                     `json:"data_file"`
+	ConnectionPoolSize int                        `json:"connection_pool_size"`
+	RequestTimeout     Duration                   `json:"request_timeout"`
+	Upstreams          []*UpstreamConfigJSON      `json:"upstreams"`
+}
+
+// UpstreamConfigJSON 用于JSON配置的上游配置（不包含运行时字段）
+type UpstreamConfigJSON struct {
+	Name         string `json:"name"`
+	Registry     string `json:"registry"`
+	RoutePattern string `json:"route_pattern"`
 }
 
 // UpstreamConfig 上游注册表配置
@@ -257,7 +266,8 @@ func NewRegistryProxy(config *Config) (*RegistryProxy, error) {
 		authService:  authService,
 		proxyService: proxyService,
 		store:        store,
-		upstreams:    make(map[string]*UpstreamConfig),
+		upstreams:    make([]*UpstreamConfig, 0),
+		upstreamMap:  make(map[string]*UpstreamConfig),
 		logger:       logger,
 		config:       config,
 	}
@@ -312,7 +322,8 @@ func (rp *RegistryProxy) AddUpstream(config *UpstreamConfig) error {
 	}
 	config.Pusher = pusher
 	
-	rp.upstreams[config.Name] = config
+	rp.upstreams = append(rp.upstreams, config)
+	rp.upstreamMap[config.Name] = config
 	
 	rp.logger.Info("Added upstream registry", 
 		zap.String("name", config.Name),
