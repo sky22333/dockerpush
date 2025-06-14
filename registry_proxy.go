@@ -1614,6 +1614,18 @@ func (rp *RegistryProxy) inferScopeFromPath(path, method string) string {
 				actions = []string{"delete"}
 			}
 		}
+	case strings.Contains(path, "/blobs/uploads/"):
+		// 必须在/blobs/之前检查，因为/blobs/uploads/包含/blobs/
+		parts := strings.Split(path, "/blobs/uploads/")
+		if len(parts) == 2 && parts[0] != "" {
+			repository = parts[0]
+			// 修正：上传操作需要push和pull权限
+			if method == "POST" {
+				actions = []string{"push", "pull"}
+			} else {
+				actions = []string{"pull"}
+			}
+		}
 	case strings.Contains(path, "/blobs/"):
 		parts := strings.Split(path, "/blobs/")
 		if len(parts) == 2 && parts[0] != "" {
@@ -1623,17 +1635,6 @@ func (rp *RegistryProxy) inferScopeFromPath(path, method string) string {
 				actions = []string{"pull"}
 			case "DELETE":
 				actions = []string{"delete"}
-			}
-		}
-	case strings.Contains(path, "/blobs/uploads/"):
-		parts := strings.Split(path, "/blobs/uploads/")
-		if len(parts) == 2 && parts[0] != "" {
-			repository = parts[0]
-			// 修正：上传操作需要push和pull权限
-			if method == "POST" {
-				actions = []string{"push", "pull"}
-			} else {
-				actions = []string{"pull"}
 			}
 		}
 	case strings.HasSuffix(path, "/tags/list"):
