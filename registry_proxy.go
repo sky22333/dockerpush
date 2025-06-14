@@ -333,6 +333,15 @@ func (rp *RegistryProxy) AddUpstream(config *UpstreamConfig) error {
 	return nil
 }
 
+// getRepository 统一获取仓库名，处理通配符路由的前导斜杠
+func (rp *RegistryProxy) getRepository(c *gin.Context) string {
+	name := c.Param("name")
+	if strings.HasPrefix(name, "/") {
+		return strings.TrimPrefix(name, "/")
+	}
+	return name
+}
+
 // StartServer 启动服务器
 func (rp *RegistryProxy) StartServer() error {
 	gin.SetMode(gin.ReleaseMode)
@@ -353,27 +362,27 @@ func (rp *RegistryProxy) StartServer() error {
 		authGroup := v2.Group("/")
 		authGroup.Use(rp.AuthMiddleware())
 		{
-			// Manifest API
-			authGroup.GET("/:name/manifests/:reference", rp.HandleManifestGet)
-			authGroup.PUT("/:name/manifests/:reference", rp.HandleManifestPut)
-			authGroup.DELETE("/:name/manifests/:reference", rp.HandleManifestDelete)
-			authGroup.HEAD("/:name/manifests/:reference", rp.HandleManifestHead)
+			// Manifest API - 使用通配符支持多级仓库名
+			authGroup.GET("/*name/manifests/:reference", rp.HandleManifestGet)
+			authGroup.PUT("/*name/manifests/:reference", rp.HandleManifestPut)
+			authGroup.DELETE("/*name/manifests/:reference", rp.HandleManifestDelete)
+			authGroup.HEAD("/*name/manifests/:reference", rp.HandleManifestHead)
 			
-			// Blob API
-			authGroup.GET("/:name/blobs/:digest", rp.HandleBlobGet)
-			authGroup.HEAD("/:name/blobs/:digest", rp.HandleBlobHead)
-			authGroup.DELETE("/:name/blobs/:digest", rp.HandleBlobDelete)
+			// Blob API - 使用通配符支持多级仓库名
+			authGroup.GET("/*name/blobs/:digest", rp.HandleBlobGet)
+			authGroup.HEAD("/*name/blobs/:digest", rp.HandleBlobHead)
+			authGroup.DELETE("/*name/blobs/:digest", rp.HandleBlobDelete)
 			
-			// Upload API
-			authGroup.POST("/:name/blobs/uploads/", rp.HandleBlobUploadStart)
-			authGroup.PATCH("/:name/blobs/uploads/:uuid", rp.HandleBlobUploadChunk)
-			authGroup.PUT("/:name/blobs/uploads/:uuid", rp.HandleBlobUploadComplete)
-			authGroup.DELETE("/:name/blobs/uploads/:uuid", rp.HandleBlobUploadCancel)
-			authGroup.GET("/:name/blobs/uploads/:uuid", rp.HandleBlobUploadStatus)
+			// Upload API - 使用通配符支持多级仓库名
+			authGroup.POST("/*name/blobs/uploads/", rp.HandleBlobUploadStart)
+			authGroup.PATCH("/*name/blobs/uploads/:uuid", rp.HandleBlobUploadChunk)
+			authGroup.PUT("/*name/blobs/uploads/:uuid", rp.HandleBlobUploadComplete)
+			authGroup.DELETE("/*name/blobs/uploads/:uuid", rp.HandleBlobUploadCancel)
+			authGroup.GET("/*name/blobs/uploads/:uuid", rp.HandleBlobUploadStatus)
 			
 			// Catalog API
 			authGroup.GET("/_catalog", rp.HandleCatalog)
-			authGroup.GET("/:name/tags/list", rp.HandleTagsList)
+			authGroup.GET("/*name/tags/list", rp.HandleTagsList)
 		}
 	}
 	
@@ -439,7 +448,7 @@ func (rp *RegistryProxy) HandleManifestPut(c *gin.Context) {
 		return
 	}
 	
-	repository := c.Param("name")
+	repository := rp.getRepository(c)
 	reference := c.Param("reference")
 	
 	upstream := rp.determineUpstream(repository)
@@ -491,7 +500,7 @@ func (rp *RegistryProxy) HandleManifestPut(c *gin.Context) {
 }
 
 func (rp *RegistryProxy) HandleBlobUploadStart(c *gin.Context) {
-	repository := c.Param("name")
+	repository := rp.getRepository(c)
 	
 	upstream := rp.determineUpstream(repository)
 	if upstream == nil {
@@ -577,7 +586,7 @@ func (rp *RegistryProxy) HandleBlobUploadChunk(c *gin.Context) {
 		return
 	}
 	
-	repository := c.Param("name")
+	repository := rp.getRepository(c)
 	uploadUUID := c.Param("uuid")
 	
 	upstream := rp.determineUpstream(repository)
@@ -819,7 +828,7 @@ func (rp *RegistryProxy) ErrorMiddleware() gin.HandlerFunc {
 
 // HandleManifestGet 流式获取Manifest
 func (rp *RegistryProxy) HandleManifestGet(c *gin.Context) {
-	repository := c.Param("name")
+	repository := rp.getRepository(c)
 	reference := c.Param("reference")
 	
 	upstream := rp.determineUpstream(repository)
@@ -862,7 +871,7 @@ func (rp *RegistryProxy) HandleManifestGet(c *gin.Context) {
 
 // HandleManifestHead 获取Manifest头部信息
 func (rp *RegistryProxy) HandleManifestHead(c *gin.Context) {
-	repository := c.Param("name")
+	repository := rp.getRepository(c)
 	reference := c.Param("reference")
 	
 	upstream := rp.determineUpstream(repository)
@@ -901,7 +910,7 @@ func (rp *RegistryProxy) HandleManifestHead(c *gin.Context) {
 
 // HandleManifestDelete 删除Manifest
 func (rp *RegistryProxy) HandleManifestDelete(c *gin.Context) {
-	repository := c.Param("name")
+	repository := rp.getRepository(c)
 	reference := c.Param("reference")
 	
 	upstream := rp.determineUpstream(repository)
@@ -939,7 +948,7 @@ func (rp *RegistryProxy) HandleManifestDelete(c *gin.Context) {
 
 // HandleBlobGet 流式获取Blob
 func (rp *RegistryProxy) HandleBlobGet(c *gin.Context) {
-	repository := c.Param("name")
+	repository := rp.getRepository(c)
 	digest := c.Param("digest")
 	
 	upstream := rp.determineUpstream(repository)
@@ -977,7 +986,7 @@ func (rp *RegistryProxy) HandleBlobGet(c *gin.Context) {
 
 // HandleBlobHead 获取Blob头部信息
 func (rp *RegistryProxy) HandleBlobHead(c *gin.Context) {
-	repository := c.Param("name")
+	repository := rp.getRepository(c)
 	digest := c.Param("digest")
 	
 	upstream := rp.determineUpstream(repository)
@@ -1015,7 +1024,7 @@ func (rp *RegistryProxy) HandleBlobHead(c *gin.Context) {
 
 // HandleBlobDelete 删除Blob
 func (rp *RegistryProxy) HandleBlobDelete(c *gin.Context) {
-	repository := c.Param("name")
+	repository := rp.getRepository(c)
 	digest := c.Param("digest")
 	
 	upstream := rp.determineUpstream(repository)
@@ -1062,7 +1071,7 @@ func (rp *RegistryProxy) HandleBlobUploadComplete(c *gin.Context) {
 		return
 	}
 	
-	repository := c.Param("name")
+	repository := rp.getRepository(c)
 	uploadUUID := c.Param("uuid")
 	digest := c.Query("digest")
 	
@@ -1123,7 +1132,7 @@ func (rp *RegistryProxy) HandleBlobUploadComplete(c *gin.Context) {
 
 // HandleBlobUploadCancel 取消上传
 func (rp *RegistryProxy) HandleBlobUploadCancel(c *gin.Context) {
-	repository := c.Param("name")
+	repository := rp.getRepository(c)
 	uploadUUID := c.Param("uuid")
 	
 	upstream := rp.determineUpstream(repository)
@@ -1168,7 +1177,7 @@ func (rp *RegistryProxy) HandleBlobUploadCancel(c *gin.Context) {
 
 // HandleBlobUploadStatus 获取上传状态
 func (rp *RegistryProxy) HandleBlobUploadStatus(c *gin.Context) {
-	repository := c.Param("name")
+	repository := rp.getRepository(c)
 	uploadUUID := c.Param("uuid")
 	
 	upstream := rp.determineUpstream(repository)
@@ -1245,7 +1254,7 @@ func (rp *RegistryProxy) HandleCatalog(c *gin.Context) {
 
 // HandleTagsList 获取标签列表
 func (rp *RegistryProxy) HandleTagsList(c *gin.Context) {
-	repository := c.Param("name")
+	repository := rp.getRepository(c)
 	
 	upstream := rp.determineUpstream(repository)
 	if upstream == nil {
