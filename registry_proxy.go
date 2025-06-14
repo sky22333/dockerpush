@@ -359,6 +359,10 @@ func (rp *RegistryProxy) StartServer() error {
 		v2.PATCH("/*path", rp.HandleUnifiedRequest)
 	}
 
+	// 认证端点（根路径级别）
+	router.GET("/token", rp.HandleAuth)
+	router.POST("/token", rp.HandleAuth)
+	
 	// 健康检查
 	router.GET("/health", rp.HandleHealth)
 	router.GET("/metrics", rp.HandleMetrics)
