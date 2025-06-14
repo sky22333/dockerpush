@@ -392,7 +392,7 @@ func (rp *RegistryProxy) HandleUnifiedRequest(c *gin.Context) {
 	}
 	
 	// 特殊端点：认证端点不需要认证
-	if path == "auth" {
+	if path == "auth" || path == "token" {
 		rp.HandleAuth(c)
 		return
 	}
@@ -452,7 +452,7 @@ func (rp *RegistryProxy) checkAuthentication(c *gin.Context) bool {
 			scheme = "http"
 		}
 		host := c.Request.Host
-		authURL := fmt.Sprintf("%s://%s/v2/auth", scheme, host)
+		authURL := fmt.Sprintf("%s://%s/token", scheme, host)
 		
 			// 从请求路径推断scope
 	path := strings.TrimPrefix(c.Param("path"), "/")
@@ -1594,10 +1594,7 @@ func (rp *RegistryProxy) extractUUIDFromLocation(location string) string {
 
 // shouldOmitScope 判断是否应该省略scope参数（模拟Docker Hub行为）
 func (rp *RegistryProxy) shouldOmitScope(path, method string) bool {
-	// 根据Docker Hub的行为，POST /blobs/uploads/ 请求返回空scope
-	if method == "POST" && strings.Contains(path, "/blobs/uploads/") {
-		return true
-	}
+	// 根据实际测试，Docker Hub总是返回scope，不需要省略
 	return false
 }
 
