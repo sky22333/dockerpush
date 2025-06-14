@@ -454,14 +454,18 @@ func (rp *RegistryProxy) checkAuthentication(c *gin.Context) bool {
 		path := strings.TrimPrefix(c.Param("path"), "/")
 		scope := rp.inferScopeFromPath(path, c.Request.Method)
 		
+		// 使用标准的service参数
+		service := "registry.docker.io"
+		
 		var wwwAuth string
 		if scope != "" {
-			wwwAuth = fmt.Sprintf(`Bearer realm="%s",service="registry",scope="%s"`, authURL, scope)
+			wwwAuth = fmt.Sprintf(`Bearer realm="%s",service="%s",scope="%s"`, authURL, service, scope)
 		} else {
-			wwwAuth = fmt.Sprintf(`Bearer realm="%s",service="registry"`, authURL)
+			wwwAuth = fmt.Sprintf(`Bearer realm="%s",service="%s"`, authURL, service)
 		}
 		
 		c.Header("WWW-Authenticate", wwwAuth)
+		c.Header("Docker-Distribution-API-Version", "registry/2.0")
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 		return false
 	}
@@ -1621,7 +1625,8 @@ func (rp *RegistryProxy) inferScopeFromPath(path, method string) string {
 		parts := strings.Split(path, "/blobs/uploads/")
 		if len(parts) == 2 && parts[0] != "" {
 			repository = parts[0]
-			actions = []string{"push", "pull"}
+			// Docker Hub标准：对于blobs/uploads请求只返回pull权限
+			actions = []string{"pull"}
 		}
 	case strings.HasSuffix(path, "/tags/list"):
 		repository = strings.TrimSuffix(path, "/tags/list")
