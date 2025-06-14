@@ -396,6 +396,12 @@ func (rp *RegistryProxy) HandleRegistryRequest(c *gin.Context) {
 	path := strings.TrimPrefix(c.Param("path"), "/")
 	method := c.Request.Method
 	
+	// 排除认证路径，避免路由冲突
+	if path == "auth" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	
 	// 解析路径并分发到对应的Handler（按优先级排序，避免误匹配）
 	switch {
 	case strings.Contains(path, "/blobs/uploads/"):
