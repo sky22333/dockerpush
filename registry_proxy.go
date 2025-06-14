@@ -3,19 +3,19 @@ package main
 import (
 	"context"
 	cryptorand "crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"encoding/json"
-	"path/filepath"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"go.uber.org/zap"
 )
@@ -80,14 +80,11 @@ type Config struct {
 
 // UpstreamConfig 上游注册表配置
 type UpstreamConfig struct {
-	Name      string                `json:"name"`
-	Registry  string                `json:"registry"`
-	Username  string                `json:"username"`
-	Password  string                `json:"password"`
-	Auth      authn.Authenticator   `json:"-"`
-	Transport http.RoundTripper     `json:"-"`
-	Pusher    *remote.Pusher        `json:"-"`
-	RoutePattern string            `json:"route_pattern"`
+	Name         string             `json:"name"`
+	Registry     string             `json:"registry"`
+	Transport    http.RoundTripper  `json:"-"`
+	Pusher       *remote.Pusher     `json:"-"`
+	RoutePattern string             `json:"route_pattern"`
 }
 
 // ProxyService 代理服务
@@ -208,41 +205,33 @@ func (usm *UploadSessionManager) IsClosed() bool {
 	return atomic.LoadInt32(&usm.closed) == 1
 }
 
-// SafeUpdateOffset 线程安全地更新偏移量
 func (usm *UploadSessionManager) SafeUpdateOffset(delta int64) {
 	usm.mutex.Lock()
 	defer usm.mutex.Unlock()
 	usm.session.Offset += delta
 }
 
-// MemoryAuthService 基于内存的认证服务
 type MemoryAuthService struct {
 	store         *MemoryStore
 	tokenExpiry   time.Duration
 	logger        *zap.Logger
 	jwtSigningKey []byte
-	// 移除：clientAuthCache - 完全透传模式下不需要缓存
 }
 
-// TokenResponse Docker认证令牌响应
 type TokenResponse struct {
 	Token       string `json:"token"`
 	AccessToken string `json:"access_token"`
 	ExpiresIn   int    `json:"expires_in"`
 }
 
-// NewRegistryProxy 创建新的注册表代理
 func NewRegistryProxy(config *Config) (*RegistryProxy, error) {
 	logger, _ := zap.NewProduction()
 	
-	// 初始化内存存储
 	store := NewMemoryStore()
 	
-	// 生成JWT签名密钥
 	jwtKey := make([]byte, 32)
 	cryptorand.Read(jwtKey)
 	
-	// 初始化认证服务
 	authService := &MemoryAuthService{
 		store:         store,
 		tokenExpiry:   config.TokenExpiry.ToDuration(),
@@ -250,7 +239,6 @@ func NewRegistryProxy(config *Config) (*RegistryProxy, error) {
 		jwtSigningKey: jwtKey,
 	}
 	
-	// 初始化代理服务
 	proxyService := &ProxyService{
 		logger:         logger,
 		semaphore:      make(chan struct{}, config.MaxConcurrent),
@@ -259,7 +247,6 @@ func NewRegistryProxy(config *Config) (*RegistryProxy, error) {
 		shardCount:     config.ConnectionPoolSize,
 	}
 	
-	// 初始化分片
 	for i := 0; i < config.ConnectionPoolSize; i++ {
 		proxyService.uploadSessions[i] = &sessionShard{
 			sessions: make(map[string]*UploadSessionManager),
@@ -275,7 +262,6 @@ func NewRegistryProxy(config *Config) (*RegistryProxy, error) {
 		config:       config,
 	}
 	
-	// 如果启用数据持久化，尝试加载数据
 	if config.DataPersistence && config.DataFile != "" {
 		proxy.loadPersistedData()
 	}
@@ -283,7 +269,6 @@ func NewRegistryProxy(config *Config) (*RegistryProxy, error) {
 	return proxy, nil
 }
 
-// loadPersistedData 加载持久化数据
 func (rp *RegistryProxy) loadPersistedData() {
 	if _, err := os.Stat(rp.config.DataFile); os.IsNotExist(err) {
 		rp.logger.Info("No persistent data file found, starting fresh")
@@ -304,37 +289,23 @@ func (rp *RegistryProxy) loadPersistedData() {
 	rp.logger.Info("Persistent data loaded successfully")
 }
 
-// AddUpstream 添加上游注册表
 func (rp *RegistryProxy) AddUpstream(config *UpstreamConfig) error {
-	// 初始化认证器
-	if config.Username != "" && config.Password != "" {
-		config.Auth = &authn.Basic{
-			Username: config.Username,
-			Password: config.Password,
-		}
-	} else {
-		config.Auth = authn.Anonymous
-	}
-	
-	// 创建优化的传输层
 	config.Transport = &http.Transport{
-		MaxIdleConns:           200,                // 增加最大空闲连接数
-		MaxIdleConnsPerHost:    50,                 // 增加每个主机的最大空闲连接数
-		IdleConnTimeout:        90 * time.Second,   // 空闲连接超时
-		TLSHandshakeTimeout:    10 * time.Second,   // TLS握手超时
-		ResponseHeaderTimeout:  30 * time.Second,   // 响应头超时
-		ExpectContinueTimeout:  1 * time.Second,    // Expect: 100-continue超时
-		MaxConnsPerHost:        100,                // 每个主机的最大连接数
-		DisableCompression:     true,               // 禁用压缩以提高流式传输性能
-		WriteBufferSize:        rp.config.BufferSize, // 写缓冲区大小
-		ReadBufferSize:         rp.config.BufferSize,  // 读缓冲区大小
+		MaxIdleConns:           200,
+		MaxIdleConnsPerHost:    50,
+		IdleConnTimeout:        90 * time.Second,
+		TLSHandshakeTimeout:    10 * time.Second,
+		ResponseHeaderTimeout:  30 * time.Second,
+		ExpectContinueTimeout:  1 * time.Second,
+		MaxConnsPerHost:        100,
+		DisableCompression:     true,
+		WriteBufferSize:        rp.config.BufferSize,
+		ReadBufferSize:         rp.config.BufferSize,
 	}
 	
-	// 创建推送器
 	pusher, err := remote.NewPusher(
-		remote.WithAuth(config.Auth),
 		remote.WithTransport(config.Transport),
-		remote.WithJobs(rp.config.MaxConcurrent/2), // 使用一半的并发数
+		remote.WithJobs(rp.config.MaxConcurrent/2),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create pusher: %w", err)
@@ -416,13 +387,12 @@ func (rp *RegistryProxy) StartServer() error {
 	return rp.server.ListenAndServe()
 }
 
-// HandleAuth 处理Docker认证 - 支持透传模式
 func (rp *RegistryProxy) HandleAuth(c *gin.Context) {
 	service := c.Query("service")
 	scope := c.Query("scope")
 	
 	// 验证基本认证格式
-	username, _, ok := c.Request.BasicAuth()
+	username, password, ok := c.Request.BasicAuth()
 	if !ok || username == "" {
 		c.Header("WWW-Authenticate", `Basic realm="Registry Realm"`)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
@@ -432,16 +402,12 @@ func (rp *RegistryProxy) HandleAuth(c *gin.Context) {
 	rp.logger.Info("Client authentication request", 
 		zap.String("username", username))
 	
-	// 生成访问令牌
-	token, err := rp.authService.GenerateToken(username, service, scope)
+	token, err := rp.authService.GenerateToken(username, password, service, scope)
 	if err != nil {
 		rp.logger.Error("Failed to generate token", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "token generation failed"})
 		return
 	}
-	
-	// 🔥 移除：不再存储客户端认证信息，实现真正透传
-	// rp.storeClientAuth(token, username, password)
 	
 	response := TokenResponse{
 		Token:       token,
@@ -452,7 +418,6 @@ func (rp *RegistryProxy) HandleAuth(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// HandleManifestPut 流式处理Manifest推送
 func (rp *RegistryProxy) HandleManifestPut(c *gin.Context) {
 	repository := c.Param("name")
 	reference := c.Param("reference")
@@ -463,28 +428,22 @@ func (rp *RegistryProxy) HandleManifestPut(c *gin.Context) {
 		return
 	}
 	
-	// 构建上游URL
 	upstreamURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", upstream.Registry, repository, reference)
 	
-	// 创建上游PUT请求，直接传递请求体
 	req, err := http.NewRequestWithContext(c.Request.Context(), "PUT", upstreamURL, c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create upstream request"})
 		return
 	}
 	
-	// 复制必要的头部
 	rp.copyHeaders(c.Request, req, []string{"Content-Type", "Content-Length", "Authorization"})
 	
-	// 设置默认Content-Type
 	if req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
 	}
 	
-	// 添加认证 - 使用透传模式
 	rp.setUpstreamAuthWithClient(req, upstream, c)
 	
-	// 发起上游请求
 	client := &http.Client{
 		Transport: upstream.Transport,
 		Timeout:   rp.config.RequestTimeout.ToDuration(),
@@ -496,10 +455,8 @@ func (rp *RegistryProxy) HandleManifestPut(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 	
-	// 复制响应头部和状态码
 	rp.copyResponseHeaders(resp, c)
 	
-	// 如果成功，设置Location头部
 	if resp.StatusCode == http.StatusCreated {
 	c.Header("Location", fmt.Sprintf("/v2/%s/manifests/%s", repository, reference))
 	}
@@ -513,7 +470,6 @@ func (rp *RegistryProxy) HandleManifestPut(c *gin.Context) {
 		zap.Int("status", resp.StatusCode))
 }
 
-// HandleBlobUploadStart 开始流式blob上传
 func (rp *RegistryProxy) HandleBlobUploadStart(c *gin.Context) {
 	repository := c.Param("name")
 	
@@ -523,7 +479,6 @@ func (rp *RegistryProxy) HandleBlobUploadStart(c *gin.Context) {
 		return
 	}
 	
-	// 向上游发起上传开始请求
 	upstreamURL := fmt.Sprintf("https://%s/v2/%s/blobs/uploads/", upstream.Registry, repository)
 	
 	req, err := http.NewRequestWithContext(c.Request.Context(), "POST", upstreamURL, nil)
@@ -532,13 +487,9 @@ func (rp *RegistryProxy) HandleBlobUploadStart(c *gin.Context) {
 		return
 	}
 	
-	// 复制必要的头部
 	rp.copyHeaders(c.Request, req, []string{"Authorization"})
-	
-	// 添加认证 - 使用透传模式
 	rp.setUpstreamAuthWithClient(req, upstream, c)
 	
-	// 发起上游请求
 	client := &http.Client{
 		Transport: upstream.Transport,
 		Timeout:   rp.config.RequestTimeout.ToDuration(),
@@ -550,14 +501,12 @@ func (rp *RegistryProxy) HandleBlobUploadStart(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 	
-	// 从上游响应中提取upload UUID - 增强版
 	location := resp.Header.Get("Location")
 	if location == "" {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream did not provide upload location"})
 		return
 	}
 	
-	// 🔥 健壮的UUID提取逻辑
 	uploadUUID := rp.extractUUIDFromLocation(location)
 	if uploadUUID == "" {
 		uploadUUID = rp.generateUploadUUID()
@@ -566,7 +515,6 @@ func (rp *RegistryProxy) HandleBlobUploadStart(c *gin.Context) {
 			zap.String("generated_uuid", uploadUUID))
 	}
 	
-	// 创建流式上传会话管理器
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	
 	sessionManager := &UploadSessionManager{
@@ -583,16 +531,11 @@ func (rp *RegistryProxy) HandleBlobUploadStart(c *gin.Context) {
 		closed:     0,
 	}
 	
-	// 存储会话管理器
 	rp.proxyService.SetUploadSession(uploadUUID, sessionManager)
-	
-	// 存储会话信息
 	rp.store.SetUploadSession(uploadUUID, sessionManager.session)
 	
-	// 调整Location头部指向我们的代理
 	proxyLocation := fmt.Sprintf("/v2/%s/blobs/uploads/%s", repository, uploadUUID)
 	
-	// 复制响应头部
 	rp.copyResponseHeaders(resp, c)
 	c.Header("Location", proxyLocation)
 	c.Status(resp.StatusCode)
@@ -1354,38 +1297,32 @@ func (rp *RegistryProxy) copyResponseHeaders(src *http.Response, c *gin.Context)
 	}
 }
 
-// setUpstreamAuth 设置上游认证头部 - 支持透传模式
-func (rp *RegistryProxy) setUpstreamAuth(req *http.Request, upstream *UpstreamConfig) {
-	if upstream.Auth != nil {
-		authConfig, err := upstream.Auth.Authorization()
-		if err == nil && authConfig != nil {
-			// 优先使用 RegistryToken (Bearer Token)
-			if authConfig.RegistryToken != "" {
-				req.Header.Set("Authorization", "Bearer "+authConfig.RegistryToken)
-			} else if authConfig.Auth != "" {
-				// 使用 Auth 字段 (Base64 编码的 username:password)
-				req.Header.Set("Authorization", "Basic "+authConfig.Auth)
-			} else if authConfig.Username != "" && authConfig.Password != "" {
-				// 使用基本认证
-				req.SetBasicAuth(authConfig.Username, authConfig.Password)
-			} else if authConfig.IdentityToken != "" {
-				// 使用身份令牌
-				req.Header.Set("Authorization", "Bearer "+authConfig.IdentityToken)
-			}
-		}
-	}
-}
-
-// setUpstreamAuthWithClient 统一认证处理 - 避免重复设置
+// setUpstreamAuthWithClient 统一认证处理 - 纯透传模式
 func (rp *RegistryProxy) setUpstreamAuthWithClient(req *http.Request, upstream *UpstreamConfig, c *gin.Context) {
-	// 🔥 检查是否已经设置了Authorization头部（通过copyHeaders设置）
+	// 🔥 优先级1：直接透传Authorization头部
 	if req.Header.Get("Authorization") != "" {
 		rp.logger.Debug("Authorization already set via copyHeaders")
 		return
 	}
 	
-	// 如果没有Authorization头部，使用配置的上游认证（主要用于内部健康检查等）
-	rp.setUpstreamAuth(req, upstream)
+	// 🔥 优先级2：JWT解析重建认证
+	if authToken, exists := c.Get("auth_token"); exists {
+		if claims, err := rp.authService.ParseToken(authToken.(string)); err == nil {
+			if claims.ClientAuth != "" {
+				if authData, err := base64.StdEncoding.DecodeString(claims.ClientAuth); err == nil {
+					parts := strings.Split(string(authData), ":")
+					if len(parts) == 2 {
+						req.SetBasicAuth(parts[0], parts[1])
+						rp.logger.Debug("Using JWT embedded client auth", zap.String("username", claims.Username))
+						return
+					}
+				}
+			}
+		}
+	}
+	
+	// 🔥 移除配置认证回退 - 让上游处理认证失败
+	rp.logger.Debug("No valid auth found, letting upstream handle authentication")
 }
 
 // getDefaultUpstream 获取默认上游配置

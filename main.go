@@ -123,7 +123,6 @@ func LoadConfig(configFile string) (*Config, error) {
 	return config, nil
 }
 
-// initLogger 初始化日志
 func initLogger(level string) (*zap.Logger, error) {
 	var config zap.Config
 
@@ -149,40 +148,31 @@ func initLogger(level string) (*zap.Logger, error) {
 	return config.Build()
 }
 
-// setupUpstreams 设置上游注册表 - 支持智能路由
 func setupUpstreams(proxy *RegistryProxy, config *Config) error {
-	// 示例：添加DockerHub作为默认上游
 	dockerhubConfig := &UpstreamConfig{
 		Name:         "dockerhub",
 		Registry:     "index.docker.io",
-		Username:     os.Getenv("DOCKERHUB_USERNAME"),
-		Password:     os.Getenv("DOCKERHUB_PASSWORD"),
-		RoutePattern: "library/*", // 路由模式：library开头的镜像使用DockerHub
+		RoutePattern: "*",
 	}
 
 	if err := proxy.AddUpstream(dockerhubConfig); err != nil {
 		return fmt.Errorf("failed to add dockerhub upstream: %w", err)
 	}
 
-	// 添加GCR上游（如果配置了的话）
 	if gcrServiceAccount := os.Getenv("GCR_SERVICE_ACCOUNT"); gcrServiceAccount != "" {
 		gcrConfig := &UpstreamConfig{
 			Name:         "gcr",
 			Registry:     "gcr.io",
-			RoutePattern: "gcr.io/*", // 路由模式：gcr.io开头的镜像使用GCR
-			// GCR需要特殊的认证处理
+			RoutePattern: "gcr.io/*",
 		}
 		proxy.AddUpstream(gcrConfig)
 	}
 
-	// 添加Harbor私有仓库（示例）
 	if harborHost := os.Getenv("HARBOR_HOST"); harborHost != "" {
 		harborConfig := &UpstreamConfig{
 			Name:         "harbor",
 			Registry:     harborHost,
-			Username:     os.Getenv("HARBOR_USERNAME"),
-			Password:     os.Getenv("HARBOR_PASSWORD"),
-			RoutePattern: "private/*", // 路由模式：private开头的镜像使用Harbor
+			RoutePattern: "private/*",
 		}
 		proxy.AddUpstream(harborConfig)
 	}
@@ -190,16 +180,13 @@ func setupUpstreams(proxy *RegistryProxy, config *Config) error {
 	return nil
 }
 
-// startBackgroundServices 启动后台服务
 func startBackgroundServices(proxy *RegistryProxy, logger *zap.Logger) {
-	// 启动数据持久化（如果启用）
 	if proxy.config.DataPersistence {
 		go startDataPersistence(proxy, logger)
 	}
 	
-	// 启动会话清理任务，防止内存泄漏
 	go func() {
-		ticker := time.NewTicker(10 * time.Minute) // 每10分钟清理一次
+		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 		
 		for {
@@ -211,9 +198,8 @@ func startBackgroundServices(proxy *RegistryProxy, logger *zap.Logger) {
 		}
 	}()
 	
-	// 启动认证token清理任务
 	go func() {
-		ticker := time.NewTicker(1 * time.Hour) // 每小时清理一次过期token
+		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 		
 		for {
@@ -226,15 +212,12 @@ func startBackgroundServices(proxy *RegistryProxy, logger *zap.Logger) {
 	}()
 }
 
-// gracefulShutdown 优雅停机
 func gracefulShutdown(proxy *RegistryProxy, logger *zap.Logger) {
 	logger.Info("Starting graceful shutdown...")
 	
-	// 创建超时上下文
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	
-	// 停止HTTP服务器
 	if proxy.server != nil {
 		if err := proxy.server.Shutdown(ctx); err != nil {
 			logger.Error("Failed to shutdown server gracefully", zap.Error(err))
@@ -243,13 +226,10 @@ func gracefulShutdown(proxy *RegistryProxy, logger *zap.Logger) {
 		}
 	}
 	
-	// 等待活跃上传完成
 	go waitForActiveUploads(proxy, logger, ctx)
 	
-	// 清理所有会话资源
 	proxy.proxyService.CleanupExpiredSessions()
 	
-	// 停止内存存储
 	if proxy.store != nil {
 		proxy.store.Stop()
 		logger.Info("Memory store stopped")
@@ -258,7 +238,6 @@ func gracefulShutdown(proxy *RegistryProxy, logger *zap.Logger) {
 	logger.Info("Graceful shutdown completed")
 }
 
-// waitForActiveUploads 等待活跃上传完成
 func waitForActiveUploads(proxy *RegistryProxy, logger *zap.Logger, ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -269,7 +248,6 @@ func waitForActiveUploads(proxy *RegistryProxy, logger *zap.Logger, ctx context.
 			logger.Warn("Timeout waiting for uploads to complete")
 			return
 		case <-ticker.C:
-			// 统计活跃会话数
 			activeCount := 0
 			for _, shard := range proxy.proxyService.uploadSessions {
 				shard.mutex.RLock()
@@ -288,7 +266,6 @@ func waitForActiveUploads(proxy *RegistryProxy, logger *zap.Logger, ctx context.
 	}
 }
 
-// startDataPersistence 启动数据持久化
 func startDataPersistence(proxy *RegistryProxy, logger *zap.Logger) {
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
@@ -301,7 +278,6 @@ func startDataPersistence(proxy *RegistryProxy, logger *zap.Logger) {
 	}
 }
 
-// saveData 保存数据到文件
 func saveData(proxy *RegistryProxy, logger *zap.Logger) {
 	data, err := proxy.store.ExportData()
 	if err != nil {
