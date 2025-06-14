@@ -23,7 +23,7 @@
     },
     {
       "name": "dockerhub",
-      "registry": "index.docker.io",
+      "registry": "registry-1.docker.io",
       "route_pattern": "*"
     }
   ]

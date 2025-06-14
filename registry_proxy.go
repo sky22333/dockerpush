@@ -450,7 +450,17 @@ func (rp *RegistryProxy) checkAuthentication(c *gin.Context) bool {
 		host := c.Request.Host
 		authURL := fmt.Sprintf("%s://%s/v2/auth", scheme, host)
 		
-		wwwAuth := fmt.Sprintf(`Bearer realm="%s",service="registry"`, authURL)
+		// 从请求路径推断scope
+		path := strings.TrimPrefix(c.Param("path"), "/")
+		scope := rp.inferScopeFromPath(path, c.Request.Method)
+		
+		var wwwAuth string
+		if scope != "" {
+			wwwAuth = fmt.Sprintf(`Bearer realm="%s",service="registry",scope="%s"`, authURL, scope)
+		} else {
+			wwwAuth = fmt.Sprintf(`Bearer realm="%s",service="registry"`, authURL)
+		}
+		
 		c.Header("WWW-Authenticate", wwwAuth)
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 		return false
@@ -616,16 +626,19 @@ func (rp *RegistryProxy) HandleAuth(c *gin.Context) {
 	service := c.Query("service")
 	scope := c.Query("scope")
 	
-	// 验证基本认证格式
-	username, password, ok := c.Request.BasicAuth()
-	if !ok || username == "" {
-		c.Header("WWW-Authenticate", `Basic realm="Registry Realm"`)
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
-		return
+	// Docker客户端可能不发送Basic Auth，支持匿名token请求
+	username, password, hasBasicAuth := c.Request.BasicAuth()
+	
+	// 如果没有Basic Auth，使用默认匿名用户
+	if !hasBasicAuth || username == "" {
+		username = "anonymous"
+		password = ""
 	}
 	
 	rp.logger.Info("Client authentication request", 
-		zap.String("username", username))
+		zap.String("username", username),
+		zap.String("service", service),
+		zap.String("scope", scope))
 	
 	token, err := rp.authService.GenerateToken(username, password, service, scope)
 	if err != nil {
@@ -1567,4 +1580,59 @@ func (rp *RegistryProxy) extractUUIDFromLocation(location string) string {
 	
 	// 使用正则表达式匹配标准UUID格式
 	return uuidRegex.FindString(location)
+}
+
+// inferScopeFromPath 从请求路径推断scope参数
+func (rp *RegistryProxy) inferScopeFromPath(path, method string) string {
+	if path == "" || path == "_catalog" {
+		return ""
+	}
+	
+	// 解析仓库名
+	var repository string
+	var actions []string
+	
+	switch {
+	case strings.Contains(path, "/manifests/"):
+		parts := strings.Split(path, "/manifests/")
+		if len(parts) == 2 && parts[0] != "" {
+			repository = parts[0]
+			switch method {
+			case "GET", "HEAD":
+				actions = []string{"pull"}
+			case "PUT":
+				actions = []string{"push", "pull"}
+			case "DELETE":
+				actions = []string{"delete"}
+			}
+		}
+	case strings.Contains(path, "/blobs/"):
+		parts := strings.Split(path, "/blobs/")
+		if len(parts) == 2 && parts[0] != "" {
+			repository = parts[0]
+			switch method {
+			case "GET", "HEAD":
+				actions = []string{"pull"}
+			case "DELETE":
+				actions = []string{"delete"}
+			}
+		}
+	case strings.Contains(path, "/blobs/uploads/"):
+		parts := strings.Split(path, "/blobs/uploads/")
+		if len(parts) == 2 && parts[0] != "" {
+			repository = parts[0]
+			actions = []string{"push", "pull"}
+		}
+	case strings.HasSuffix(path, "/tags/list"):
+		repository = strings.TrimSuffix(path, "/tags/list")
+		if repository != "" {
+			actions = []string{"pull"}
+		}
+	}
+	
+	if repository != "" && len(actions) > 0 {
+		return fmt.Sprintf("repository:%s:%s", repository, strings.Join(actions, ","))
+	}
+	
+	return ""
 } 
