@@ -442,7 +442,16 @@ func (rp *RegistryProxy) HandleUnifiedRequest(c *gin.Context) {
 func (rp *RegistryProxy) checkAuthentication(c *gin.Context) bool {
 	authHeader := c.GetHeader("Authorization")
 	if authHeader == "" {
-		c.Header("WWW-Authenticate", `Bearer realm="/v2/auth",service="registry"`)
+		// 构建完整的认证URL
+		scheme := "https"
+		if c.Request.TLS == nil {
+			scheme = "http"
+		}
+		host := c.Request.Host
+		authURL := fmt.Sprintf("%s://%s/v2/auth", scheme, host)
+		
+		wwwAuth := fmt.Sprintf(`Bearer realm="%s",service="registry"`, authURL)
+		c.Header("WWW-Authenticate", wwwAuth)
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 		return false
 	}
