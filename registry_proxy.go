@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"go.uber.org/zap"
 )
+
+// UUID正则表达式，用于验证标准UUID格式（RFC 4122）
+var uuidRegex = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 
 // Duration 自定义时间类型，支持JSON字符串和数字解析
 type Duration time.Duration
@@ -333,15 +337,6 @@ func (rp *RegistryProxy) AddUpstream(config *UpstreamConfig) error {
 	return nil
 }
 
-// getRepository 统一获取仓库名，处理通配符路由的前导斜杠
-func (rp *RegistryProxy) getRepository(c *gin.Context) string {
-	name := c.Param("name")
-	if strings.HasPrefix(name, "/") {
-		return strings.TrimPrefix(name, "/")
-	}
-	return name
-}
-
 // StartServer 启动服务器
 func (rp *RegistryProxy) StartServer() error {
 	gin.SetMode(gin.ReleaseMode)
@@ -362,30 +357,19 @@ func (rp *RegistryProxy) StartServer() error {
 		authGroup := v2.Group("/")
 		authGroup.Use(rp.AuthMiddleware())
 		{
-			// Manifest API - 使用通配符支持多级仓库名
-			authGroup.GET("/*name/manifests/:reference", rp.HandleManifestGet)
-			authGroup.PUT("/*name/manifests/:reference", rp.HandleManifestPut)
-			authGroup.DELETE("/*name/manifests/:reference", rp.HandleManifestDelete)
-			authGroup.HEAD("/*name/manifests/:reference", rp.HandleManifestHead)
-			
-			// Blob API - 使用通配符支持多级仓库名
-			authGroup.GET("/*name/blobs/:digest", rp.HandleBlobGet)
-			authGroup.HEAD("/*name/blobs/:digest", rp.HandleBlobHead)
-			authGroup.DELETE("/*name/blobs/:digest", rp.HandleBlobDelete)
-			
-			// Upload API - 使用通配符支持多级仓库名
-			authGroup.POST("/*name/blobs/uploads/", rp.HandleBlobUploadStart)
-			authGroup.PATCH("/*name/blobs/uploads/:uuid", rp.HandleBlobUploadChunk)
-			authGroup.PUT("/*name/blobs/uploads/:uuid", rp.HandleBlobUploadComplete)
-			authGroup.DELETE("/*name/blobs/uploads/:uuid", rp.HandleBlobUploadCancel)
-			authGroup.GET("/*name/blobs/uploads/:uuid", rp.HandleBlobUploadStatus)
-			
-			// Catalog API
+			// Catalog API - 必须在通配符路由之前
 			authGroup.GET("/_catalog", rp.HandleCatalog)
-			authGroup.GET("/*name/tags/list", rp.HandleTagsList)
+			
+			// 使用统一的通配符路由处理所有仓库相关请求
+			authGroup.GET("/*path", rp.HandleRegistryRequest)
+			authGroup.PUT("/*path", rp.HandleRegistryRequest)
+			authGroup.POST("/*path", rp.HandleRegistryRequest)
+			authGroup.DELETE("/*path", rp.HandleRegistryRequest)
+			authGroup.HEAD("/*path", rp.HandleRegistryRequest)
+			authGroup.PATCH("/*path", rp.HandleRegistryRequest)
 		}
 	}
-	
+
 	// 健康检查
 	router.GET("/health", rp.HandleHealth)
 	router.GET("/metrics", rp.HandleMetrics)
@@ -405,6 +389,176 @@ func (rp *RegistryProxy) StartServer() error {
 		return rp.server.ListenAndServeTLS(rp.config.TLSCert, rp.config.TLSKey)
 	}
 	return rp.server.ListenAndServe()
+}
+
+// HandleRegistryRequest 统一处理所有Docker Registry请求
+func (rp *RegistryProxy) HandleRegistryRequest(c *gin.Context) {
+	path := strings.TrimPrefix(c.Param("path"), "/")
+	method := c.Request.Method
+	
+	// 解析路径并分发到对应的Handler（按优先级排序，避免误匹配）
+	switch {
+	case strings.Contains(path, "/blobs/uploads/"):
+		rp.handleBlobUploadRequest(c, path, method)
+	case strings.Contains(path, "/manifests/"):
+		rp.handleManifestRequest(c, path, method)
+	case strings.Contains(path, "/blobs/"):
+		rp.handleBlobRequest(c, path, method)
+	case strings.Contains(path, "/tags/list") && strings.HasSuffix(path, "/tags/list"):
+		if method == "GET" {
+			// 设置仓库名参数
+			repository := strings.TrimSuffix(path, "/tags/list")
+			if repository == "" {
+				c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+				return
+			}
+			c.Set("repository", repository)
+			rp.HandleTagsList(c)
+		} else {
+			c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "method not allowed"})
+		}
+	default:
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+	}
+}
+
+// handleManifestRequest 处理Manifest相关请求
+func (rp *RegistryProxy) handleManifestRequest(c *gin.Context, path, method string) {
+	parts := strings.Split(path, "/manifests/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	
+	// 设置参数供Handler使用
+	c.Set("repository", parts[0])
+	c.Set("reference", parts[1])
+	
+	switch method {
+	case "GET":
+		rp.HandleManifestGet(c)
+	case "PUT":
+		rp.HandleManifestPut(c)
+	case "DELETE":
+		rp.HandleManifestDelete(c)
+	case "HEAD":
+		rp.HandleManifestHead(c)
+	default:
+		c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "method not allowed"})
+	}
+}
+
+// handleBlobRequest 处理Blob相关请求
+func (rp *RegistryProxy) handleBlobRequest(c *gin.Context, path, method string) {
+	parts := strings.Split(path, "/blobs/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	
+	// 设置参数供Handler使用
+	c.Set("repository", parts[0])
+	c.Set("digest", parts[1])
+	
+	switch method {
+	case "GET":
+		rp.HandleBlobGet(c)
+	case "HEAD":
+		rp.HandleBlobHead(c)
+	case "DELETE":
+		rp.HandleBlobDelete(c)
+	default:
+		c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "method not allowed"})
+	}
+}
+
+// handleBlobUploadRequest 处理Blob上传相关请求
+func (rp *RegistryProxy) handleBlobUploadRequest(c *gin.Context, path, method string) {
+	parts := strings.Split(path, "/blobs/uploads/")
+	if len(parts) != 2 || parts[0] == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	
+	repository := parts[0]
+	uploadPath := parts[1]
+	
+	// 设置参数供Handler使用
+	c.Set("repository", repository)
+	
+	if uploadPath == "" {
+		// POST /v2/{name}/blobs/uploads/
+		if method == "POST" {
+			rp.HandleBlobUploadStart(c)
+		} else {
+			c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "method not allowed"})
+		}
+	} else {
+		// 包含UUID的上传操作 - 提取并验证UUID
+		uuid := strings.Split(uploadPath, "/")[0] // 只取第一段作为UUID，忽略额外路径
+		if uuid == "" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		c.Set("uuid", uuid)
+		switch method {
+		case "PATCH":
+			rp.HandleBlobUploadChunk(c)
+		case "PUT":
+			rp.HandleBlobUploadComplete(c)
+		case "DELETE":
+			rp.HandleBlobUploadCancel(c)
+		case "GET":
+			rp.HandleBlobUploadStatus(c)
+		default:
+			c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "method not allowed"})
+		}
+	}
+}
+
+// getRepository 统一获取仓库名，兼容新的参数设置方式
+func (rp *RegistryProxy) getRepository(c *gin.Context) string {
+	// 优先从Context获取（新方式）
+	if repo := c.GetString("repository"); repo != "" {
+		return repo
+	}
+	
+	// 兼容原有方式
+	name := c.Param("name")
+	if strings.HasPrefix(name, "/") {
+		return strings.TrimPrefix(name, "/")
+	}
+	return name
+}
+
+// getReference 获取引用（标签或摘要）
+func (rp *RegistryProxy) getReference(c *gin.Context) string {
+	// 优先从Context获取（新方式）
+	if ref := c.GetString("reference"); ref != "" {
+		return ref
+	}
+	// 兼容原有方式
+	return c.Param("reference")
+}
+
+// getDigest 获取摘要
+func (rp *RegistryProxy) getDigest(c *gin.Context) string {
+	// 优先从Context获取（新方式）
+	if digest := c.GetString("digest"); digest != "" {
+		return digest
+	}
+	// 兼容原有方式
+	return c.Param("digest")
+}
+
+// getUUID 获取上传UUID
+func (rp *RegistryProxy) getUUID(c *gin.Context) string {
+	// 优先从Context获取（新方式）
+	if uuid := c.GetString("uuid"); uuid != "" {
+		return uuid
+	}
+	// 兼容原有方式
+	return c.Param("uuid")
 }
 
 func (rp *RegistryProxy) HandleAuth(c *gin.Context) {
@@ -449,7 +603,7 @@ func (rp *RegistryProxy) HandleManifestPut(c *gin.Context) {
 	}
 	
 	repository := rp.getRepository(c)
-	reference := c.Param("reference")
+	reference := rp.getReference(c)
 	
 	upstream := rp.determineUpstream(repository)
 	if upstream == nil {
@@ -487,7 +641,7 @@ func (rp *RegistryProxy) HandleManifestPut(c *gin.Context) {
 	rp.copyResponseHeaders(resp, c)
 	
 	if resp.StatusCode == http.StatusCreated {
-	c.Header("Location", fmt.Sprintf("/v2/%s/manifests/%s", repository, reference))
+		c.Header("Location", fmt.Sprintf("/v2/%s/manifests/%s", repository, reference))
 	}
 	
 	c.Status(resp.StatusCode)
@@ -587,7 +741,7 @@ func (rp *RegistryProxy) HandleBlobUploadChunk(c *gin.Context) {
 	}
 	
 	repository := rp.getRepository(c)
-	uploadUUID := c.Param("uuid")
+	uploadUUID := rp.getUUID(c)
 	
 	upstream := rp.determineUpstream(repository)
 	if upstream == nil {
@@ -829,7 +983,7 @@ func (rp *RegistryProxy) ErrorMiddleware() gin.HandlerFunc {
 // HandleManifestGet 流式获取Manifest
 func (rp *RegistryProxy) HandleManifestGet(c *gin.Context) {
 	repository := rp.getRepository(c)
-	reference := c.Param("reference")
+	reference := rp.getReference(c)
 	
 	upstream := rp.determineUpstream(repository)
 	if upstream == nil {
@@ -872,7 +1026,7 @@ func (rp *RegistryProxy) HandleManifestGet(c *gin.Context) {
 // HandleManifestHead 获取Manifest头部信息
 func (rp *RegistryProxy) HandleManifestHead(c *gin.Context) {
 	repository := rp.getRepository(c)
-	reference := c.Param("reference")
+	reference := rp.getReference(c)
 	
 	upstream := rp.determineUpstream(repository)
 	if upstream == nil {
@@ -911,7 +1065,7 @@ func (rp *RegistryProxy) HandleManifestHead(c *gin.Context) {
 // HandleManifestDelete 删除Manifest
 func (rp *RegistryProxy) HandleManifestDelete(c *gin.Context) {
 	repository := rp.getRepository(c)
-	reference := c.Param("reference")
+	reference := rp.getReference(c)
 	
 	upstream := rp.determineUpstream(repository)
 	if upstream == nil {
@@ -949,7 +1103,7 @@ func (rp *RegistryProxy) HandleManifestDelete(c *gin.Context) {
 // HandleBlobGet 流式获取Blob
 func (rp *RegistryProxy) HandleBlobGet(c *gin.Context) {
 	repository := rp.getRepository(c)
-	digest := c.Param("digest")
+	digest := rp.getDigest(c)
 	
 	upstream := rp.determineUpstream(repository)
 	if upstream == nil {
@@ -987,7 +1141,7 @@ func (rp *RegistryProxy) HandleBlobGet(c *gin.Context) {
 // HandleBlobHead 获取Blob头部信息
 func (rp *RegistryProxy) HandleBlobHead(c *gin.Context) {
 	repository := rp.getRepository(c)
-	digest := c.Param("digest")
+	digest := rp.getDigest(c)
 	
 	upstream := rp.determineUpstream(repository)
 	if upstream == nil {
@@ -1025,7 +1179,7 @@ func (rp *RegistryProxy) HandleBlobHead(c *gin.Context) {
 // HandleBlobDelete 删除Blob
 func (rp *RegistryProxy) HandleBlobDelete(c *gin.Context) {
 	repository := rp.getRepository(c)
-	digest := c.Param("digest")
+	digest := rp.getDigest(c)
 	
 	upstream := rp.determineUpstream(repository)
 	if upstream == nil {
@@ -1072,7 +1226,7 @@ func (rp *RegistryProxy) HandleBlobUploadComplete(c *gin.Context) {
 	}
 	
 	repository := rp.getRepository(c)
-	uploadUUID := c.Param("uuid")
+	uploadUUID := rp.getUUID(c)
 	digest := c.Query("digest")
 	
 	upstream := rp.determineUpstream(repository)
@@ -1087,6 +1241,13 @@ func (rp *RegistryProxy) HandleBlobUploadComplete(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "upload session not found"})
 		return
 	}
+	
+	// 使用defer确保无论成功失败都清理会话
+	defer func() {
+		sessionManager.Close()
+		rp.proxyService.DeleteUploadSession(uploadUUID)
+		rp.store.DeleteUploadSession(uploadUUID)
+	}()
 	
 	// 构建完成上传的URL
 	upstreamURL := fmt.Sprintf("https://%s/v2/%s/blobs/uploads/%s", upstream.Registry, repository, uploadUUID)
@@ -1118,13 +1279,6 @@ func (rp *RegistryProxy) HandleBlobUploadComplete(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 	
-	// 清理上传会话
-	sessionManager.Close() // 使用新的优雅关闭方法
-	rp.proxyService.DeleteUploadSession(uploadUUID)
-	
-	// 删除存储中的会话
-	rp.store.DeleteUploadSession(uploadUUID)
-	
 	// 转发响应
 	rp.copyResponseHeaders(resp, c)
 	c.Status(resp.StatusCode)
@@ -1133,7 +1287,7 @@ func (rp *RegistryProxy) HandleBlobUploadComplete(c *gin.Context) {
 // HandleBlobUploadCancel 取消上传
 func (rp *RegistryProxy) HandleBlobUploadCancel(c *gin.Context) {
 	repository := rp.getRepository(c)
-	uploadUUID := c.Param("uuid")
+	uploadUUID := rp.getUUID(c)
 	
 	upstream := rp.determineUpstream(repository)
 	if upstream == nil {
@@ -1178,7 +1332,7 @@ func (rp *RegistryProxy) HandleBlobUploadCancel(c *gin.Context) {
 // HandleBlobUploadStatus 获取上传状态
 func (rp *RegistryProxy) HandleBlobUploadStatus(c *gin.Context) {
 	repository := rp.getRepository(c)
-	uploadUUID := c.Param("uuid")
+	uploadUUID := rp.getUUID(c)
 	
 	upstream := rp.determineUpstream(repository)
 	if upstream == nil {
@@ -1381,13 +1535,11 @@ func (rp *RegistryProxy) getDefaultUpstream() *UpstreamConfig {
 
 // extractUUIDFromLocation 从Location头部提取UUID
 func (rp *RegistryProxy) extractUUIDFromLocation(location string) string {
-	// 解析Location头部，提取UUID
-	parts := strings.Split(location, "/")
-	if len(parts) > 0 {
-		uuid := parts[len(parts)-1]
-		if len(uuid) == 36 { // 假设UUID格式为36个字符
-			return uuid
-		}
+	// 移除查询参数
+	if idx := strings.Index(location, "?"); idx != -1 {
+		location = location[:idx]
 	}
-	return ""
+	
+	// 使用正则表达式匹配标准UUID格式
+	return uuidRegex.FindString(location)
 } 
