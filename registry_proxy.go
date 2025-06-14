@@ -419,6 +419,15 @@ func (rp *RegistryProxy) HandleAuth(c *gin.Context) {
 }
 
 func (rp *RegistryProxy) HandleManifestPut(c *gin.Context) {
+	// 非阻塞信号量控制
+	select {
+	case rp.proxyService.semaphore <- struct{}{}:
+		defer func() { <-rp.proxyService.semaphore }()
+	default:
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "server busy, please retry later"})
+		return
+	}
+	
 	repository := c.Param("name")
 	reference := c.Param("reference")
 	
@@ -548,6 +557,15 @@ func (rp *RegistryProxy) HandleBlobUploadStart(c *gin.Context) {
 
 // HandleBlobUploadChunk 处理流式分块上传
 func (rp *RegistryProxy) HandleBlobUploadChunk(c *gin.Context) {
+	// 非阻塞信号量控制
+	select {
+	case rp.proxyService.semaphore <- struct{}{}:
+		defer func() { <-rp.proxyService.semaphore }()
+	default:
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "server busy, please retry later"})
+		return
+	}
+	
 	repository := c.Param("name")
 	uploadUUID := c.Param("uuid")
 	
@@ -666,8 +684,7 @@ func (rp *RegistryProxy) AuthMiddleware() gin.HandlerFunc {
 
 // determineUpstream 智能上游路由选择
 func (rp *RegistryProxy) determineUpstream(repository string) *UpstreamConfig {
-	// 🔥 智能路由逻辑：基于repository名称匹配上游
-	
+
 	// 1. 精确匹配：查找专门为该repository配置的上游
 	for _, upstream := range rp.upstreams {
 		if upstream.RoutePattern != "" {
@@ -730,7 +747,7 @@ type UploadSession struct {
 	Offset     int64     `json:"offset"`
 }
 
-// 其他处理函数的声明（简化）
+// 其他处理函数的声明
 func (rp *RegistryProxy) HandlePing(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{})
 }
@@ -1025,6 +1042,15 @@ func (rp *RegistryProxy) HandleBlobDelete(c *gin.Context) {
 
 // HandleBlobUploadComplete 完成流式Blob上传
 func (rp *RegistryProxy) HandleBlobUploadComplete(c *gin.Context) {
+	// 非阻塞信号量控制
+	select {
+	case rp.proxyService.semaphore <- struct{}{}:
+		defer func() { <-rp.proxyService.semaphore }()
+	default:
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "server busy, please retry later"})
+		return
+	}
+	
 	repository := c.Param("name")
 	uploadUUID := c.Param("uuid")
 	digest := c.Query("digest")
@@ -1098,7 +1124,7 @@ func (rp *RegistryProxy) HandleBlobUploadCancel(c *gin.Context) {
 	// 清理本地会话
 	sessionManager, exists := rp.proxyService.GetUploadSession(uploadUUID)
 	if exists {
-		sessionManager.Close() // 使用新的优雅关闭方法
+		sessionManager.Close()
 		rp.proxyService.DeleteUploadSession(uploadUUID)
 	}
 	
@@ -1297,15 +1323,15 @@ func (rp *RegistryProxy) copyResponseHeaders(src *http.Response, c *gin.Context)
 	}
 }
 
-// setUpstreamAuthWithClient 统一认证处理 - 纯透传模式
+// setUpstreamAuthWithClient 统一认证处理 - 透传模式
 func (rp *RegistryProxy) setUpstreamAuthWithClient(req *http.Request, upstream *UpstreamConfig, c *gin.Context) {
-	// 🔥 优先级1：直接透传Authorization头部
+	// 优先级1：直接透传Authorization头部
 	if req.Header.Get("Authorization") != "" {
 		rp.logger.Debug("Authorization already set via copyHeaders")
 		return
 	}
 	
-	// 🔥 优先级2：JWT解析重建认证
+	// 优先级2：JWT解析重建认证
 	if authToken, exists := c.Get("auth_token"); exists {
 		if claims, err := rp.authService.ParseToken(authToken.(string)); err == nil {
 			if claims.ClientAuth != "" {
@@ -1321,7 +1347,7 @@ func (rp *RegistryProxy) setUpstreamAuthWithClient(req *http.Request, upstream *
 		}
 	}
 	
-	// 🔥 移除配置认证回退 - 让上游处理认证失败
+	// 上游处理认证失败
 	rp.logger.Debug("No valid auth found, letting upstream handle authentication")
 }
 
