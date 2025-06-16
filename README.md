@@ -33,9 +33,9 @@
 - **透明认证**: 对Docker客户端完全透明
 - **错误恢复**: 完善的错误处理和日志记录
 
-## Linux客户端使用
+## 使用教程
 
-### 1. 启动代理服务
+### 1. 启动代理服务（服务端）
 
 ```bash
 # 构建
@@ -53,7 +53,7 @@ go build -o dockerpush
 > 将`yourdomain.com`替换为你的反向代理的域名
 
 ```bash
-# 登录（使用Docker Hub凭据）
+# 登录（使用Docker Hub官方仓库的凭据）
 docker login yourdomain.com
 
 # 输入用户名，然后输入密码或者token
