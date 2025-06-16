@@ -11,6 +11,7 @@
 - 重写`Www-Authenticate`头部，将realm指向代理端点
 - 中继认证请求到原始Docker Hub认证服务
 - 透传JWT token给客户端
+- 透明中继，不存储Token
 
 #### 2. CDN检测与优化 (`isExternalCDN`)
 - 智能检测Docker Hub CDN域名
