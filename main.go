@@ -1,4 +1,4 @@
-// main.go
+// https://github.com/sky22333/dockerpush
 package main
 
 import (
