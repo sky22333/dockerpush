@@ -1,0 +1,30 @@
+{
+  "server": {
+    "port": 5002,
+    "host": ""
+  },
+  "timeouts": {
+    "readTimeout": 600,
+    "writeTimeout": 600,
+    "readHeaderTimeout": 30,
+    "idleTimeout": 300,
+    "clientTimeout": 600,
+    "cdnTimeout": 600
+  },
+  "rateLimit": {
+    "requestLimit": 300,
+    "periodHours": 1.0
+  },
+  "security": {
+    "whiteList": [
+      "127.0.0.1/32",
+      "::1/128",
+      "192.168.0.0/16",
+      "10.0.0.0/8"
+    ],
+    "blackList": [
+      "192.0.2.1/32",
+      "2001:db8::/32"
+    ]
+  }
+}
